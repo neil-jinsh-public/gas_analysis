@@ -124,7 +124,7 @@ def identify_illegal_jumps(status_path):
     return illegal_jumps
 
 
-def extract_abnormal_cylinders_in_use(abnormal_list, circulation_list, info_circulation):
+def extract_abnormal_cylinders_in_use(abnormal_list, circulation_list, df_cylinder, df_scanning):
     """
     返回两个列表的交集，并在info_circulation中查询这些交集元素对应的记录
 
@@ -141,13 +141,95 @@ def extract_abnormal_cylinders_in_use(abnormal_list, circulation_list, info_circ
 
     # 如果交集为空，直接返回空DataFrame
     if not intersection_ids:
-        return pd.DataFrame(columns=info_circulation.columns)
+        return pd.DataFrame(columns=df_scanning.columns)
 
-    # 使用isin()方法筛选DataFrame
-    result_df = info_circulation[info_circulation['gas_id'].isin(intersection_ids)]
+    # 转换时间
+    df_cylinder['nextCheckDate'] = pd.to_datetime(df_cylinder['nextCheckDate'], errors='coerce')
+    df_scanning['createtime'] = pd.to_datetime(df_scanning['createtime'], errors='coerce')
+
+    # 创建 gas_id → nextCheckDate 的映射
+    next_check_map = df_cylinder.set_index('id')['nextCheckDate']
+
+    # 为 df_scanning 新增列
+    df_scanning['nextCheckDate'] = df_scanning['gas_id'].map(next_check_map)
+
+    # 5) 比较每条scanning记录的nextCheckDate 是否早于该气瓶的最新 createtime,冗余一天的时间
+    mask = df_scanning['nextCheckDate'].notna() & (df_scanning['nextCheckDate'] + pd.Timedelta(days=1) < df_scanning['createtime'])
+    result_df = df_scanning.loc[mask].copy()
 
     return result_df
 
+def extract_overcheck_cylinders_in_use(abnormal_list, circulation_list, df_cylinder, df_scanning):
+    """
+    返回两个列表的交集，并在info_circulation中查询这些交集元素对应的记录
+
+    参数:
+        abnormal_list: 包含异常气瓶ID的列表
+        circulation_list: 包含流通中气瓶ID的列表
+        info_circulation: 包含气瓶详细信息的字典，键为gas_id，值为气瓶信息
+
+    返回:
+        包含交集气瓶详细信息的列表
+    """
+    # 计算两个列表的交集（使用集合操作提高效率）
+    intersection_ids = set(abnormal_list) & set(circulation_list)
+
+    # 如果交集为空，直接返回空DataFrame
+    if not intersection_ids:
+        return pd.DataFrame(columns=df_scanning.columns)
+
+    # 转换时间
+    df_cylinder['nextCheckDate'] = pd.to_datetime(df_cylinder['nextCheckDate'], errors='coerce')
+    df_scanning['createtime'] = pd.to_datetime(df_scanning['createtime'], errors='coerce')
+
+    # 创建 gas_id → nextCheckDate 的映射
+    next_check_map = df_cylinder.set_index('id')['nextCheckDate']
+
+    # 为 df_scanning 新增列
+    df_scanning['nextCheckDate'] = df_scanning['gas_id'].map(next_check_map)
+
+    # 5) 比较每条scanning记录的nextCheckDate 是否早于该气瓶的最新 createtime,冗余一天的时间
+    mask = df_scanning['nextCheckDate'].notna() & (
+                df_scanning['nextCheckDate'] + pd.Timedelta(days=1) < df_scanning['createtime'])
+    result_df = df_scanning.loc[mask].copy()
+
+    return result_df
+
+def extract_overscrap_cylinders_in_use(abnormal_list, circulation_list, df_cylinder, df_scanning):
+    """
+    返回两个列表的交集，并在info_circulation中查询这些交集元素对应的记录
+
+    参数:
+        abnormal_list: 包含异常气瓶ID的列表
+        circulation_list: 包含流通中气瓶ID的列表
+        info_circulation: 包含气瓶详细信息的字典，键为gas_id，值为气瓶信息
+
+    返回:
+        包含交集气瓶详细信息的列表
+    """
+    # 计算两个列表的交集（使用集合操作提高效率）
+    intersection_ids = set(abnormal_list) & set(circulation_list)
+
+    # 如果交集为空，直接返回空DataFrame
+    if not intersection_ids:
+        return pd.DataFrame(columns=df_scanning.columns)
+
+    # 转换时间
+    df_cylinder['nextCheckDate'] = pd.to_datetime(df_cylinder['nextCheckDate'], errors='coerce')
+    df_scanning['createtime'] = pd.to_datetime(df_scanning['createtime'], errors='coerce')
+
+    # 创建 gas_id → nextCheckDate 的映射
+    next_check_map = df_cylinder.set_index('id')['nextCheckDate']
+
+    # 为 df_scanning 新增列
+    df_scanning['nextCheckDate'] = df_scanning['gas_id'].map(next_check_map)
+
+    # 5) 比较每条scanning记录的nextCheckDate 是否早于该气瓶的最新 createtime,冗余一天的时间
+    mask = df_scanning['nextCheckDate'].notna() & (
+                df_scanning['nextCheckDate'] + pd.Timedelta(days=1) < df_scanning['createtime'])
+    result_df = df_scanning.loc[mask].copy()
+
+    return result_df
 
 def count_status_transitions_per_hour(df):
     """
@@ -418,7 +500,7 @@ def detect_fast_transitions(status_path_df, max_seconds=20, output_path="./gas_c
 
     return result_df
 
-def abnormal_distribution_gas_cylinders(df):
+def abnormal_distribution_gas_cylinders(df, df_cylinder, company_mapping):
     # 存储异常记录
     abnormal_rows = []
     fake_data = []
@@ -461,7 +543,7 @@ def abnormal_distribution_gas_cylinders(df):
             })
 
     # 构建异常 DataFrame
-    return pd.DataFrame(abnormal_rows), pd.DataFrame(fake_data)
+    return pd.DataFrame(abnormal_rows)
 
 def statics_company_exception(df, df_cylinder, company_mapping):
 
@@ -471,13 +553,20 @@ def statics_company_exception(df, df_cylinder, company_mapping):
     abnormal_with_company = df.merge(df_cylinder, left_on='gas_id', right_on='id', how='left')
 
     # Step 3：统计每个 company_code/company 的异常次数
+    # company_abnormal_count = (
+    #     abnormal_with_company
+    #     .groupby(['companyCode'])
+    #     .reset_index(name='abnormal_count')
+    #     .sort_values('abnormal_count', ascending=False)
+    # )
+
     company_abnormal_count = (
-        abnormal_with_company
-        .groupby(['companyCode'])
-        .size()
-        .reset_index(name='abnormal_count')
+        abnormal_with_company.groupby(['companyCode'])
+        .agg(abnormal_count=("gas_id", "count"), cylinder_list=("gas_id", lambda x: list(x)))
+        .reset_index()  # 在这里添加reset_index
         .sort_values('abnormal_count', ascending=False)
     )
+
 
     return company_abnormal_count.merge(company_mapping, on='companyCode', how='left')
 
@@ -509,7 +598,6 @@ def statics_employee_exception(df, df_employee, company_mapping):
         .merge(df_employee[['id', 'name', 'companyCode']], left_on='employee_id', right_on='id', how='left')
         .merge(company_mapping[['companyCode', 'company']], on='companyCode', how='left')
     )
-
     return employee_abnormal_count
 
 def statics_company_fake_data_exception(df, df_cylinder, company_mapping):
@@ -1002,51 +1090,6 @@ def detect_fast_delivery(df_cylinder, filtered_df, company_mapping, max_hours=1)
         'company_stats': dict(company_counter)
     }
 
-    # abnormal_rows = []
-    # company_counter = defaultdict(int)
-    #
-    # for idx, row in filtered_df.iterrows():
-    #     gas_id = row['gas_id']
-    #     status_path = eval(row['status_path']) if isinstance(row['status_path'], str) else row['status_path']
-    #     time_path = row['time_path']
-    #
-    #     if not isinstance(time_path, list) or len(status_path) != len(time_path):
-    #         continue
-    #
-    #     # 提取步骤 4,6,7,8 的时间
-    #     steps = {'4': None, '6': None, '7': None, '8': None}
-    #     for status, time in zip(status_path, time_path):
-    #         if status in steps:
-    #             steps[status] = pd.to_datetime(time, errors='coerce')
-    #
-    #     # 若四步都存在，判断耗时
-    #     if all(steps.values()):
-    #         min_time = min(steps.values())
-    #         max_time = max(steps.values())
-    #         duration_hours = (max_time - min_time).total_seconds() / 3600
-    #
-    #         if duration_hours <= max_hours:
-    #             abnormal_rows.append(row)
-    #
-    #             # 获取企业名称
-    #             company_code_series = df_cylinder[df_cylinder['id'] == gas_id]['companyCode']
-    #             if company_code_series.empty:
-    #                 company = "未知企业"
-    #             else:
-    #                 code = company_code_series.iloc[0]
-    #                 company_match = company_mapping[company_mapping['companyCode'] == code]['company']
-    #                 company = company_match.iloc[0] if not company_match.empty else "未知企业"
-    #
-    #             company_counter[company] += 1
-    #
-    # abnormal_df = pd.DataFrame(abnormal_rows)
-    # return {
-    #     'abnormal_df': abnormal_df,
-    #     'abnormal_count': len(abnormal_df),
-    #     'company_stats': dict(company_counter)
-    # }
-
-
 def detect_overdue_delivery(df, analysis_date):
     """
     检测气瓶是否存在再充装后一周内未完成配送的异常行为。
@@ -1086,63 +1129,203 @@ def detect_overdue_delivery(df, analysis_date):
         if '6' in status_path:
             idx_6 = status_path.index('6')
             time_6 = pd.to_datetime(time_path[idx_6])
+            employee_Id = row['employee_Id'][row['status_path'].index('6')]
             if time_6 > deadline:
                 records.append({
                     'gas_id': gas_id,
                     'fill_time': fill_time,
                     'delivery_time': time_6,
                     'deadline': deadline,
+                    'employee_Id': employee_Id,
                     'abnormal_type': '超时配送'
                 })
         else:
             if deadline <= analysis_deadline:
+                employee_Id = row['employee_Id'][row['status_path'].index('2')]
                 records.append({
                     'gas_id': gas_id,
                     'link_fill_time': fill_time,
                     'link_delivery_time': None,
                     'deadline': deadline,
+                    'employee_Id': employee_Id,
                     'abnormal_type': '未配送且已超时'
                 })
 
     df_result = pd.DataFrame(records)
     return df_result
 
-def detect_user_recycled_long_time(df, df_customer):
-    # 存储异常记录
-    record_rows = []
-    # 遍历每一行判断异常
-    for idx, row in df.iterrows():
-        status_path = row['status_path']
-        time_path = row['time_path']
-        employee = row['employee_Id']
-        customer = row['customer_id']
+def detect_user_recycled_long_time(
+    df,
+    df_customer,
+    resident_days=60,
+    non_resident_days=15
+):
+    """
+    提取每个气瓶最近一次 7→8 的用时（天），并按客户类型判定是否超时。
+    返回：detail_df（逐瓶明细, 精简列）、over_resident_df、over_nonresident_df
+    说明：
+      - customer_type==0 视为居民（阈值 resident_days），其他/缺失视为非居民（阈值 non_resident_days）
+      - 仅返回必要列，避免巨大的 list 字段拖慢速度和内存
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-        # 找所有的 7 和 8 的索引
-        idx_8 = status_path.index('8')
-        idx_7_candidates = [i for i in range(idx_8) if status_path[i] == '7']
-        customer = customer[idx_7_candidates]
-        # customer_type = customer[customer.notnull()]
+    # -------- 1) 预处理：把客户类型做成 dict（一次性） --------
+    # 缺失类型统一按“非居民”处理（也可改成 None）
+    cust_type_map = dict(zip(
+        df_customer.get('id', pd.Series(dtype=object)),
+        df_customer.get('type', pd.Series(dtype=object)).fillna(1)
+    ))
 
-        if not idx_7_candidates:
-            continue  # 理论不会出现，因为前面已经筛选过
+    # -------- 2) 工具：把可能的字符串list转成list（仅在需要时做）--------
+    LIT = ast.literal_eval
+    def as_list(x):
+        if isinstance(x, list):
+            return x
+        if isinstance(x, str):
+            try:
+                return LIT(x)
+            except Exception:
+                return []
+        return [] if pd.isna(x) else [x]
 
-        idx_7 = idx_7_candidates[-1]  # 找最近的 '7'
+    # -------- 3) 主循环（仅做 Python 原生操作） --------
+    out = []
+    append = out.append  # 减少属性查找开销
 
-        time_7 = pd.to_datetime(time_path[idx_7])
-        time_8 = pd.to_datetime(time_path[idx_8])
-        diff_time_7_8 = (time_8 - time_7).total_seconds() / (24 * 60 * 60) # 以日为单位
+    for _, row in df.iterrows():
+        gas_id = row.get('gas_id')
+        if not gas_id:
+            continue
 
-        record_rows.append({
-            'gas_id': row['gas_id'],
-            'status_path': status_path,
-            'time_path': time_path,
-            'step_7_time': time_7,
-            'step_8_time': time_8,
-            'employee': employee,
-            'customer': customer,
-            'diff_time_7_8': diff_time_7_8,
+        status_path = as_list(row.get('status_path'))
+        time_path   = as_list(row.get('time_path'))
+        customers   = as_list(row.get('customer_id'))
+
+        # 长度不一致直接跳过
+        if not status_path or not time_path or len(status_path) != len(time_path):
+            continue
+        # 必须包含 7 和 8
+        if '7' not in status_path or '8' not in status_path:
+            continue
+
+        # 最近一次 8 的位置
+        try:
+            # 反向查找更快：先找最右侧的 '8'
+            rev_idx8 = status_path[::-1].index('8')
+            idx8 = len(status_path) - 1 - rev_idx8
+        except ValueError:
+            continue
+
+        # 在该 8 之前最近的 7
+        idx7 = -1
+        for j in range(idx8 - 1, -1, -1):
+            if status_path[j] == '7':
+                idx7 = j
+                break
+        if idx7 < 0:
+            continue
+
+        # 时间解析（到秒精度）
+        t7 = pd.to_datetime(time_path[idx7], errors='coerce')
+        t8 = pd.to_datetime(time_path[idx8], errors='coerce')
+        if pd.isna(t7) or pd.isna(t8) or t8 < t7:
+            continue
+
+        hold_days = (t8 - t7).total_seconds() / 86400.0
+
+        # 7 步对应的客户
+        cust_id = customers[idx7] if idx7 < len(customers) else None
+        ctype = cust_type_map.get(cust_id, 1)   # 默认当非居民
+        # 阈值
+        limit = resident_days if ctype == 0 else non_resident_days
+        over = hold_days > limit
+
+        append({
+            'gas_id': gas_id,
+            'customer_id': cust_id,
+            'customer_type': int(ctype) if pd.notna(ctype) else None,
+            'step_7_time': t7,
+            'step_8_time': t8,
+            'hold_days': hold_days,
+            'limit_days': limit,
+            'over_limit': over
         })
 
+    detail_df = pd.DataFrame(out)
+    if detail_df.empty:
+        return detail_df, pd.DataFrame(), pd.DataFrame()
 
-    # 构建异常 DataFrame
-    return pd.DataFrame(record_rows)
+    # -------- 4) 超时切片（居民/非居民） --------
+    # 统一把 NaN 当作非居民（若你要区分，可改成 detail_df['customer_type'] == 0 / detail_df['customer_type'].isna()）
+    is_resident = detail_df['customer_type'] == 0
+    over_resident_df    = detail_df[is_resident & (detail_df['over_limit'])].copy()
+    over_nonresident_df = detail_df[~is_resident & (detail_df['over_limit'])].copy()
+
+    return detail_df, over_resident_df, over_nonresident_df
+
+def detect_fake_data(df_cylinder, filtered_df, company_mapping, max_seconds=3):
+    """
+        判断气瓶操作流程中 '4-6-7' 四个步骤是否在 3秒 内完成，若是则标为异常。
+
+        参数：
+            filtered_df: DataFrame，包含 'gas_id', 'status_path', 'time_path'
+            df_cylinder: 气瓶主表，包含 'id' 和 'companyCode'
+            company_mapping: 企业映射表，包含 'companyCode' 和 'company'
+            max_hours: float，最大允许的完成时间（单位：小时）
+
+        返回：
+            result_dict = {
+                'abnormal_df': 异常记录DataFrame,
+                'abnormal_count': 异常气瓶数量,
+                'company_stats': 各企业异常数量统计字典
+            }
+        """
+    # === 1. 准备企业映射字典 ===
+    company_map_dict = dict(zip(company_mapping['companyCode'], company_mapping['company']))
+    gas_company_map = dict(zip(df_cylinder['id'], df_cylinder['companyCode']))
+
+    # === 2. 预处理 status_path / time_path，转为 list ===
+    filtered_df = filtered_df.copy()
+    filtered_df['status_path'] = filtered_df['status_path'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    # 确保 time_path 也是 list
+    filtered_df['time_path'] = filtered_df['time_path'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    # === 3. 扁平化数据（每个步骤一行） ===
+    exploded = filtered_df.explode(['status_path', 'time_path'])
+    exploded.rename(columns={'status_path': 'status', 'time_path': 'time'}, inplace=True)
+    exploded['time'] = pd.to_datetime(exploded['time'], errors='coerce')
+
+    # === 4. 只保留 4,6,7,8 步骤 ===
+    exploded = exploded[exploded['status'].isin(['4', '6', '7'])]
+
+    # === 5. 透视为列，计算耗时 ===
+    pivot_df = exploded.pivot_table(index='gas_id', columns='status', values='time', aggfunc='first')
+    pivot_df = pivot_df.dropna(subset=['4', '6', '7'])  # 四步必须全有
+
+    min_time = pivot_df.min(axis=1)
+    max_time = pivot_df.max(axis=1)
+    duration_hours = (max_time - min_time).dt.total_seconds()
+
+    # === 6. 找出异常气瓶 ===
+    abnormal_ids = duration_hours[duration_hours <= max_seconds].index
+    abnormal_df = filtered_df[filtered_df['gas_id'].isin(abnormal_ids)]
+
+    # === 7. 企业统计 ===
+    company_counter = defaultdict(int)
+    for gid in abnormal_ids:
+        company_code = gas_company_map.get(gid, None)
+        company = company_map_dict.get(company_code, "未知企业")
+        company_counter[company] += 1
+
+    return abnormal_df
+
+
+
+def statics_fake_data_exception(df, df_employee, company_mapping):
+    pass

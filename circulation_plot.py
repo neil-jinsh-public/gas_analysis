@@ -2,11 +2,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from matplotlib.font_manager import FontProperties
-from matplotlib.pyplot import legend
 from matplotlib.ticker import MaxNLocator
-from networkx.algorithms.bipartite.basic import color
 import math
 import os
+from collections import defaultdict
+import numpy as np
+import ast
+from gas_analysis.circulation_model import abnormal_flow_cylinders
 
 status_mapping = {
     '1': '充装前检查',
@@ -44,7 +46,7 @@ def extract_five_hours(hourly_stats):
 
     return night_stats.drop(columns=["hour"])
 
-def plot_abnormal_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circulation/异常气瓶在流转统计明细.txt"):
+def plot_abnormal_cylinders_in_use(df, company_mapping, df_cylinder, pic_path="./gas_circulation/5、(全部异常)气瓶超期未检仍在流转.png", txt_path="./gas_circulation/5、(全部异常)气瓶超期未检仍在流转.txt"):
     """
     绘制异常气瓶记录的公司分布图（横向柱状图）
 
@@ -70,18 +72,24 @@ def plot_abnormal_cylinders_in_use(df, company_mapping, output_txt_path="./gas_c
     plt.figure(figsize=(10, 6))
     bars = plt.barh(company_count["company"], company_count["abnormal_count"], color="blue")
 
-    for bar in bars:
-        width = bar.get_width()
-        plt.text(width + 0.5, bar.get_y() + bar.get_height() / 2, f"{int(width)}",
-                 va='center', fontsize=9, fontproperties=zh_font)
-
     # 设置轴和标题
     ax = plt.gca()
-    ax.set_xlabel("数量", fontproperties=zh_font, fontsize=9)
+    # ax.set_title("气瓶超期未检仍在流转统计", fontproperties=zh_font, fontsize=9)
+    # ax.set_xlabel(f"异常核验数量({sum(company_count["abnormal_count"])})", fontproperties=zh_font, fontsize=9)
     ax.set_ylabel("企业", fontproperties=zh_font, fontsize=9)
-    ax.set_title("异常气瓶在用数量分布图", fontproperties=zh_font, fontsize=9)
+
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=9)
     ax.set_xticklabels(ax.get_xticklabels(), fontproperties=zh_font, fontsize=9)
+
+    # 设置 x 轴范围（重要）
+    max_width = company_count["abnormal_count"].max()
+    ax.set_xlim(0, max_width * 1.1)  # 留出标注空间
+
+    # 数值标注（使用相对偏移）
+    for bar in bars:
+        width = bar.get_width()
+        ax.text(width + max_width * 0.01, bar.get_y() + bar.get_height() / 2, f"{int(width)}",
+                va='center', fontsize=9, fontproperties=zh_font)
 
     # 美观处理
     ax.spines['top'].set_visible(False)
@@ -89,14 +97,32 @@ def plot_abnormal_cylinders_in_use(df, company_mapping, output_txt_path="./gas_c
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/异常气瓶(含超报废时间&超核验时间)在用分布图.png", dpi=300)
+    plt.savefig(pic_path, dpi=300)
     plt.close()
 
     # 导出 TXT 文件
     total = company_count["abnormal_count"].sum()
     top3 = company_count.sort_values("abnormal_count", ascending=False).head(3)
 
-    with open(output_txt_path, "w", encoding="utf-8") as f:
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_count['cylinder_list'] = company_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    df_temp = company_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_count = company_count.merge(df_temp.drop(columns=['abnormal_count', 'cylinder_list', 'company', 'companyCode']), on='company_code', how='left')
+
+    with open(txt_path, "w", encoding="utf-8") as f:
         f.write("【异常气瓶在用总数】\n")
         f.write(f"异常气瓶在用总数：{total}\n\n")
 
@@ -108,11 +134,11 @@ def plot_abnormal_cylinders_in_use(df, company_mapping, output_txt_path="./gas_c
         f.write("【各公司异常气瓶在用数量明细】\n")
         f.write("公司名称\t异常扫描次数\t涉及气瓶编号列表\n")
         for _, row in company_count.iterrows():
-            cylinders = ", ".join(map(str, set(row["cylinder_list"])))
-            f.write(f"{row['company']}\t{row['abnormal_count']}\t{cylinders}\n")
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
-
-def plot_check_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circulation/异常气瓶(超核验)在流转统计明细.txt"):
+def plot_check_cylinders_in_use(df, company_mapping, df_cylinder, pic_path="./gas_circulation/6、气瓶超核验时间仍在流转.png", txt_path="./gas_circulation/6、气瓶超核验时间仍在流转.txt"):
     """
     绘制异常气瓶记录的公司分布图（横向柱状图）
 
@@ -147,9 +173,11 @@ def plot_check_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circ
 
     # 设置轴和标题
     ax = plt.gca()
-    ax.set_xlabel("数量", fontproperties=zh_font, fontsize=9)
+
+    # ax.set_title("气瓶超报废时间仍在流转统计", fontproperties=zh_font, fontsize=9)
+    # ax.set_xlabel(f"异常核验数量({sum(company_count["abnormal_count"])})", fontproperties=zh_font, fontsize=9)
     ax.set_ylabel("企业", fontproperties=zh_font, fontsize=9)
-    ax.set_title("异常气瓶在用数量分布图", fontproperties=zh_font, fontsize=9)
+
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=9)
     ax.set_xticklabels(ax.get_xticklabels(), fontproperties=zh_font, fontsize=9)
 
@@ -159,31 +187,48 @@ def plot_check_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circ
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/异常气瓶(超核验)在用分布图.png", dpi=300)
+    plt.savefig(pic_path, dpi=300)
     plt.close()
 
     # 导出 TXT 文件
     total = company_count["abnormal_count"].sum()
-    top3 = company_count.sort_values("abnormal_count", ascending=False).head(3)
 
-    with open(output_txt_path, "w", encoding="utf-8") as f:
-        f.write("【异常气瓶(超核验)在用总数】\n")
-        f.write(f"异常气瓶(超核验)在用总数：{total}\n\n")
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_count['cylinder_list'] = company_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
 
-        f.write("【异常气瓶(超核验)在用企业排名前三】\n")
-        for i, row in top3.iterrows():
-            f.write(f"{i + 1}. {row['company']}：{row['abnormal_count']}\n")
-        f.write("\n")
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_count['cylinder_list'] = company_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
 
-        f.write("【各公司异常气瓶(超核验)在用数量明细】\n")
-        f.write("公司名称\t异常扫描次数\t涉及气瓶编号列表\n")
+    df_temp = company_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_count = company_count.merge(
+        df_temp.drop(columns=['abnormal_count', 'cylinder_list', 'company', 'companyCode']), on='company_code',
+        how='left')
+
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(f"【异常(超核验)气瓶异常核验总数统计：{total}】\n\n")
+
+        f.write("【各公司异常(超核验)气瓶在用明细】\n\n")
+        f.write("公司名称\t\t异常核验次数\t\t涉及气瓶编号列表【钢瓶号】\n")
         for _, row in company_count.iterrows():
-            cylinders = ", ".join(map(str, set(row["cylinder_list"])))
-            f.write(f"{row['company']}\t{row['abnormal_count']}\t{cylinders}\n")
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
-
-
-def plot_scrap_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circulation/异常气瓶(超报废)在流转统计明细.txt"):
+def plot_scrap_cylinders_in_use(df, company_mapping, df_cylinder, pic_path="./gas_circulation/7、气瓶(超报废时间)在用分布图.png", txt_path="./gas_circulation/7、气瓶(超报废时间)在流转统计明细.txt"):
     """
     绘制异常气瓶记录的公司分布图（横向柱状图）
 
@@ -218,9 +263,9 @@ def plot_scrap_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circ
 
     # 设置轴和标题
     ax = plt.gca()
-    ax.set_xlabel("数量", fontproperties=zh_font, fontsize=9)
+    # ax.set_title("异常气瓶在用数量分布图", fontproperties=zh_font, fontsize=9)
+    # ax.set_xlabel("数量", fontproperties=zh_font, fontsize=9)
     ax.set_ylabel("企业", fontproperties=zh_font, fontsize=9)
-    ax.set_title("异常气瓶在用数量分布图", fontproperties=zh_font, fontsize=9)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=9)
     ax.set_xticklabels(ax.get_xticklabels(), fontproperties=zh_font, fontsize=9)
 
@@ -230,28 +275,47 @@ def plot_scrap_cylinders_in_use(df, company_mapping, output_txt_path="./gas_circ
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/异常气瓶(超报废)在用分布图.png", dpi=300)
+    plt.savefig(pic_path, dpi=300)
     plt.close()
 
     # 导出 TXT 文件
     total = company_count["abnormal_count"].sum()
     top3 = company_count.sort_values("abnormal_count", ascending=False).head(3)
 
-    with open(output_txt_path, "w", encoding="utf-8") as f:
-        f.write("【异常气瓶(超报废)在用总数】\n")
-        f.write(f"异常气瓶(超报废)在用总数：{total}\n\n")
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_count['cylinder_list'] = company_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
 
-        f.write("【异常气瓶(超报废)在用企业排名前三】\n")
-        for i, row in top3.iterrows():
-            f.write(f"{i + 1}. {row['company']}：{row['abnormal_count']}\n")
-        f.write("\n")
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_count['cylinder_list'] = company_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
 
-        f.write("【各公司异常气瓶(超报废)在用数量明细】\n")
-        f.write("公司名称\t异常扫描次数\t涉及气瓶编号列表\n")
+    df_temp = company_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_count = company_count.merge(
+        df_temp.drop(columns=['abnormal_count', 'cylinder_list', 'company', 'companyCode']), on='company_code',
+        how='left')
+
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(f"【异常(超报废)气瓶异常核验总数统计：{total}】\n\n")
+
+        f.write("【各公司异常(超报废)气瓶在用明细】\n\n")
+        f.write("公司名称\t\t异常核验次数\t\t涉及气瓶编号列表【钢瓶号】\n")
         for _, row in company_count.iterrows():
-            cylinders = ", ".join(map(str, set(row["cylinder_list"])))
-            f.write(f"{row['company']}\t{row['abnormal_count']}\t{cylinders}\n")
-
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
 def plot_hourly_transition_bars(hourly_stats):
     """
@@ -331,8 +395,8 @@ def plot_hourly_transition_bars(hourly_stats):
                 ax.axhline(idx - 0.5, color='red', linestyle='--', linewidth=1)
             prev_day = current_day
 
-        ax.set_title(f"各地市气瓶流转操作量(小时)（第{i + 1}张）", fontproperties=zh_font, fontsize=12)
-        ax.set_xlabel("操作量", fontproperties=zh_font)
+        # ax.set_title(f"非常规工作时间上传扫码核验记录(小时)", fontproperties=zh_font, fontsize=12)
+        # ax.set_xlabel("非常规工作时间上传扫码核验操作量", fontproperties=zh_font)
         ax.set_ylabel("时间", fontproperties=zh_font)
 
         ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=12)
@@ -341,7 +405,7 @@ def plot_hourly_transition_bars(hourly_stats):
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
         plt.tight_layout()
-        plt.savefig(f"./gas_circulation/各地市气瓶流转操作量(小时)_第{i + 1}张.png", dpi=300)
+        plt.savefig(f"./gas_circulation/非常规工作时间上传扫码核验记录[柱状图]_{i + 1}张.png", dpi=300)
         plt.close()
 
 def plot_hourly_transition_bars_other(hourly_stats):
@@ -423,8 +487,8 @@ def plot_hourly_transition_bars_other(hourly_stats):
             prev_day = current_day
 
         # 标题与标签
-        ax.set_title(f"各地市气瓶流转(含充装前至出站)操作量(小时)（第{i + 1}张）", fontproperties=zh_font, fontsize=12)
-        ax.set_xlabel("操作量", fontproperties=zh_font)
+        # ax.set_title(f"各地市气瓶流转(含充装前至出站)操作量(小时)（第{i + 1}张）", fontproperties=zh_font, fontsize=12)
+        # ax.set_xlabel("操作量", fontproperties=zh_font)
         ax.set_ylabel("时间", fontproperties=zh_font)
 
         # y 轴字体
@@ -494,7 +558,7 @@ def plot_company_transition_heatmap_and_stacked(company_hourly_stats, company_ma
         sub_cols = all_columns[i * split_size: min((i + 1) * split_size, total_cols)]
         sub_data = heatmap_data[sub_cols]
 
-        fig_width = max(12, len(sub_cols) * 0.3)
+        fig_width = max(16, len(sub_cols) * 0.6)
         fig_height = max(8, sub_data.shape[0] * 0.4)
         plt.figure(figsize=(fig_width, fig_height))
 
@@ -513,22 +577,22 @@ def plot_company_transition_heatmap_and_stacked(company_hourly_stats, company_ma
                 value = int(sub_data.iloc[y, x])
                 hour = time_obj.hour
                 is_night = (hour >= 20 or hour < 5)
-                color = 'red' if is_night and value > 50 else 'black'
+                color = 'red' if is_night and value > 10 else 'black'
                 ax.text(x + 0.5, y + 0.5, f"{value}",
                         ha='center', va='center',
                         fontsize=12, fontproperties=zh_font,
                         color=color)
 
         # 轴设置
-        ax.set_title(f"各地市流转(全流程)操作统计量热力图（第{i + 1}张）", fontproperties=zh_font)
-        ax.set_xlabel("时间", fontproperties=zh_font)
+        # ax.set_title(f"各企业非常规工作时间上传扫码核验记录（第{i + 1}张）", fontproperties=zh_font)
+        ax.set_xlabel("", fontproperties=zh_font)   # 清空x轴的内容
         ax.set_ylabel("企业", fontproperties=zh_font)
         ax.set_xticklabels([d.strftime('%m/%d %H:%M') for d in sub_data.columns],
                            fontproperties=zh_font, rotation=45, ha='right', fontsize=12)
         ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=12)
 
         plt.tight_layout()
-        plt.savefig(f"./gas_circulation/各地市流转(全流程)操作统计量热力图_第{i + 1}张.png", dpi=300)
+        plt.savefig(f"./gas_circulation/非常规工作时间上传扫码核验记录[热力图]_第{i + 1}张.png", dpi=300)
         plt.close()
 
 def plot_company_transition_heatmap_and_stacked_specify_steps(company_hourly_stats, company_mapping):
@@ -582,7 +646,7 @@ def plot_company_transition_heatmap_and_stacked_specify_steps(company_hourly_sta
         sub_cols = all_cols[i * split_size: min((i + 1) * split_size, total_cols)]
         sub_data = heatmap_data[sub_cols]
 
-        fig_width = max(12, len(sub_cols) * 0.35)
+        fig_width = max(16, len(sub_cols) * 0.6)
         fig_height = max(8, sub_data.shape[0] * 0.4)
         plt.figure(figsize=(fig_width, fig_height))
 
@@ -595,13 +659,13 @@ def plot_company_transition_heatmap_and_stacked_specify_steps(company_hourly_sta
             linewidths=0.3
         )
 
-        # 仅标注高值：夜间（20:00~次日5:00）且值 > 50 红色，其余黑色
+        # 仅标注高值：夜间（20:00~次日5:00）且值 > 10 红色，其余黑色
         for y, company in enumerate(sub_data.index):
             for x, time_obj in enumerate(sub_data.columns):
                 value = int(sub_data.iloc[y, x])
                 hour = time_obj.hour
                 is_night = (hour >= 20 or hour < 5)
-                color = 'red' if is_night and value > 50 else 'black'
+                color = 'red' if is_night and value > 10 else 'black'
                 ax.text(x + 0.5, y + 0.5, f"{value}",
                         ha='center', va='center',
                         fontsize=12, fontproperties=zh_font,
@@ -615,8 +679,8 @@ def plot_company_transition_heatmap_and_stacked_specify_steps(company_hourly_sta
                 ax.axvline(idx - 0.5, color='red', linestyle='--', linewidth=1)
             prev_day = current_day
 
-        ax.set_title(f"各地市流转操作(含充装前至出站)统计量热力图（第{i + 1}张）", fontproperties=zh_font)
-        ax.set_xlabel("时间", fontproperties=zh_font)
+        # ax.set_title(f"各地市流转操作(含充装前至出站)统计量热力图（第{i + 1}张）", fontproperties=zh_font)
+        # ax.set_xlabel("时间", fontproperties=zh_font)
         ax.set_ylabel("企业", fontproperties=zh_font)
         ax.set_xticklabels([d.strftime('%m/%d %H:%M') for d in sub_data.columns],
                            fontproperties=zh_font, rotation=45, ha='right', fontsize=12)
@@ -686,7 +750,10 @@ def plot_time_interval_statistics(df_transitions):
     plt.savefig("./gas_circulation/异常操作统计量.png", dpi=300)
     plt.close()
 
-def plot_abnormal_distribution(company_exception, employee_exception, df_cylinder, company_mapping, abnormal_distribution, txt_path_company="./gas_circulation/出站、配送未在同一天进行的统计明细_company.txt"):
+def plot_abnormal_distribution(company_exception, employee_exception, df_cylinder,
+                               pic_path_company="./gas_circulation/12、出站后当天未配送又没入站_company.png",
+                               txt_path_company="./gas_circulation/12、出站后当天未配送又没入站_company.txt",
+                               pic_path_employee="./gas_circulation/12、出站后当天未配送又没入站_employee.png",):
     """
     绘制企业异常处理统计图（横向柱状图）、绘制员工异常处理统计图（横向柱状图）
 
@@ -717,34 +784,47 @@ def plot_abnormal_distribution(company_exception, employee_exception, df_cylinde
                 va='center', fontsize=12, fontproperties=zh_font)
 
     # 图表设置
-    ax.set_title("企业异常处理次数", fontproperties=zh_font, fontsize=12)
-    ax.set_xlabel("异常次数", fontproperties=zh_font)
-    ax.set_ylabel("企业名称", fontproperties=zh_font)
+    # ax.set_title("出站后当天未配送又没入站统计（企业）", fontproperties=zh_font, fontsize=12)
+    # ax.set_xlabel(f"异常核验次数({sum(company_df['abnormal_count'])})", fontproperties=zh_font)
+    ax.set_ylabel("企业", fontproperties=zh_font)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=12)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/企业异常处理统计.png", dpi=300)
+    plt.savefig(pic_path_company, dpi=300)
     plt.close()
 
-    abnormal_with_company = abnormal_distribution.merge(df_cylinder, left_on='gas_id', right_on='id', how='left')
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_df['cylinder_list'] = company_df['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
 
-    # 文本输出(详细)
+    df_temp = company_df.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
 
-    txt_lines = ["【各公司明细】\n\n"]
-    grouped = abnormal_with_company.groupby(['companyCode'])
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
 
-    for company_code, group in grouped:
-        company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0],
-                                                                                                 '未知公司')
-        gas_ids = group['gas_id'].dropna().astype(str).tolist()
-        line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-        txt_lines.append(line)
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
 
+    company_df = company_df.merge(df_temp, on='companyCode', how='left', suffixes=('', '_drop'))
+    company_df = company_df.drop(
+        columns=[col for col in company_df.columns if col.endswith('_drop')])
+
+    # Step 5：输出 TXT 气瓶编号明细
     with open(txt_path_company, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
+        f.write(f"异常操作统计信息：{sum(company_df['abnormal_count'])}\n\n")
+
+        f.write("公司名称\t\t异常扫描次数\t\t涉及气瓶编号列表【钢瓶号】\n\n")
+        for _, row in company_df.iterrows():
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
     if employee_exception.empty:
         return
@@ -779,8 +859,8 @@ def plot_abnormal_distribution(company_exception, employee_exception, df_cylinde
         )
 
     # 图表设置
-    ax.set_title("员工异常处理次数", fontproperties=zh_font, fontsize=9)
-    ax.set_ylabel("异常次数", fontproperties=zh_font)
+    # ax.set_title("出站后当天未配送又没入站统计（员工）", fontproperties=zh_font, fontsize=9)
+    # ax.set_ylabel(f"异常核验次数({sum(employee_df['abnormal_count'])})", fontproperties=zh_font)
     ax.set_xlabel("员工（所属企业）", fontproperties=zh_font)
     ax.set_xticklabels(ax.get_xticklabels(), fontproperties=zh_font, fontsize=9, rotation=45, ha='right')
     ax.spines['top'].set_visible(False)
@@ -788,7 +868,7 @@ def plot_abnormal_distribution(company_exception, employee_exception, df_cylinde
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/员工异常处理统计(隔天配送).png", dpi=300)
+    plt.savefig(pic_path_employee, dpi=300)
     plt.close()
 
 def plot_inflator_bottle(df_cumulative, top_n):
@@ -921,10 +1001,8 @@ def plot_abnormal_flow(abnormal_flow, df_cylinder, company_mapping, save_dir="./
 
         # Step 3：统计每个 company_code/company 的异常次数
         company_abnormal_count = (
-            abnormal_with_company
-            .groupby(['companyCode'])
-            .size()
-            .reset_index(name='abnormal_count')
+            abnormal_with_company.groupby(['companyCode'])
+            .agg(abnormal_count=("gas_id", "count"), cylinder_list=("gas_id", lambda x: list(x)))
             .sort_values('abnormal_count', ascending=False)
         )
 
@@ -946,9 +1024,9 @@ def plot_abnormal_flow(abnormal_flow, df_cylinder, company_mapping, save_dir="./
 
         # 图表设置
         title = "超报废日期操作气瓶数" if flow_type == 'scrap' else "超下次检验日期操作气瓶数"
-        ax.set_title(f"各企业{title}", fontproperties=zh_font, fontsize=12)
-        ax.set_xlabel("异常气瓶数量", fontproperties=zh_font)
-        ax.set_ylabel("企业名称", fontproperties=zh_font)
+        # ax.set_title(f"各企业{title}", fontproperties=zh_font, fontsize=12)
+        # ax.set_xlabel(f"异常核验量（{sum(company_abnormal_count['abnormal_count'])}）", fontproperties=zh_font)
+        ax.set_ylabel("企业", fontproperties=zh_font)
         ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=12)
 
         ax.spines['top'].set_visible(False)
@@ -956,25 +1034,44 @@ def plot_abnormal_flow(abnormal_flow, df_cylinder, company_mapping, save_dir="./
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
         plt.tight_layout()
-        plt.savefig(os.path.join(save_dir, f"{flow_type}_异常操作统计.png"), dpi=300)
+        plt.savefig(os.path.join(save_dir, f"10、{flow_type}_异常操作(充装、开始配送、配送入户)统计.png"), dpi=300)
         plt.close()
 
-        # 文本输出(详细)
-        txt_output_path = os.path.join(txt_path, f"{flow_type}_异常操作明细.txt")
-        txt_lines = ["【各公司明细】\n\n"]
-        grouped = abnormal_with_company.groupby(['companyCode'])
+        # 导出 TXT 文件
+        # top3 = company_abnormal_count.sort_values("abnormal_count", ascending=False).head(3)
 
-        for company_code, group in grouped:
-            company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0],
-                                                                                                     '未知公司')
-            gas_ids = group['gas_id'].dropna().astype(str).tolist()
-            line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-            txt_lines.append(line)
+        # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+        company_abnormal_count['cylinder_list'] = company_abnormal_count['cylinder_list'].apply(
+            lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+        )
 
+        df_temp = company_abnormal_count.copy()
+        # 构建 id → steelSealId 的映射
+        id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+        # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+        def map_ids_to_steelSealId(ids):
+            return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+        # 新增一列保存对应的 steelSealId
+        df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+        company_abnormal_count = company_abnormal_count.merge(df_temp, on='companyCode', how='left', suffixes=('', '_drop'))
+        company_abnormal_count = company_abnormal_count.drop(columns=[col for col in company_abnormal_count.columns if col.endswith('_drop')])
+
+        txt_output_path = os.path.join(txt_path, f"10、{flow_type}_异常操作明细.txt")
+
+        # Step 5：输出 TXT 气瓶编号明细
         with open(txt_output_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(txt_lines))
+            f.write(f"异常操作统计信息：{sum(company_abnormal_count['abnormal_count'])}\n\n")
 
-def plot_abnormal_flow_other(abnormal_flow, df_cylinder, company_mapping, save_dir="./gas_circulation", txt_path='./gas_circulation/4、6、7、8在一小时内完成操作统计.txt'):
+            f.write("公司名称\t\t异常核验次数\t\t涉及气瓶编号列表【钢瓶号】\n\n")
+            for _, row in company_abnormal_count.iterrows():
+                steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+                gasids = ','.join(map(str, set(row['cylinder_list'])))
+                f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
+
+def plot_abnormal_flow_other(abnormal_flow, df_cylinder, company_mapping, pic_path="./gas_circulation/11、气瓶[出站-开始配送-配送入户-回收]用时不足1小时.png", txt_path='./gas_circulation/11、气瓶[出站-开始配送-配送入户-回收]用时不足1小时.txt'):
     """
     绘制横向柱状图，展示气瓶异常操作（报废、检验）情况。
 
@@ -987,10 +1084,8 @@ def plot_abnormal_flow_other(abnormal_flow, df_cylinder, company_mapping, save_d
 
     # Step 3：统计每个 company_code/company 的异常次数
     company_abnormal_count = (
-        abnormal_with_company
-        .groupby(['companyCode'])
-        .size()
-        .reset_index(name='abnormal_count')
+        abnormal_with_company.groupby(['companyCode'])
+        .agg(abnormal_count=("gas_id", "count"),cylinder_list=("gas_id", lambda x: list(x)))
         .sort_values('abnormal_count', ascending=False)
     )
 
@@ -1011,46 +1106,67 @@ def plot_abnormal_flow_other(abnormal_flow, df_cylinder, company_mapping, save_d
                 va='center', fontsize=12, fontproperties=zh_font)
 
     # 图表设置
-    ax.set_title(f"各企业4、6、7、8在一小时内完成操作统计", fontproperties=zh_font, fontsize=14)
-    ax.set_xlabel("异常气瓶数量", fontproperties=zh_font)
-    ax.set_ylabel("企业名称", fontproperties=zh_font)
+    # ax.set_title(f"气瓶‘出站-开始配送-配送入户-回收’用时不足1小时统计", fontproperties=zh_font, fontsize=14)
+    # ax.set_xlabel(f"异常核验数量({sum(company_abnormal_count['abnormal_count'])})", fontproperties=zh_font)
+    ax.set_ylabel("企业", fontproperties=zh_font)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=11)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/4、6、7、8在一小时内完成操作统计_AAAAA.png", dpi=300)
+    plt.savefig(pic_path, dpi=300)
     plt.close()
 
+    # 导出 TXT 文件
+    top3 = company_abnormal_count.sort_values("abnormal_count", ascending=False).head(3)
+
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_abnormal_count['cylinder_list'] = company_abnormal_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    df_temp = company_abnormal_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_abnormal_count = company_abnormal_count.merge(df_temp, on='companyCode', how='left', suffixes=('', '_drop'))
+    company_abnormal_count = company_abnormal_count.drop(
+        columns=[col for col in company_abnormal_count.columns if col.endswith('_drop')])
+
     # Step 5：输出 TXT 气瓶编号明细
-    txt_lines = ["【各公司明细】\n\n"]
-    grouped = abnormal_with_company.groupby(['companyCode'])
-
-    for company_code, group in grouped:
-        company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0],
-                                                                                                 '未知公司')
-        gas_ids = group['gas_id'].dropna().astype(str).tolist()
-        line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-        txt_lines.append(line)
-
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
+        f.write(f"各公司【气瓶[出站-开始配送-配送入户-回收]用时不足1小时统计: {sum(company_abnormal_count['abnormal_count'])}】\n\n")
 
-def plot_fake_data(company_exception, employee_exception, df_cylinder,  fake_data_cylinder, company_mapping, txt_path_company='./gas_circulation/企业上报数据异常明细.txt', txt_path_employee='./gas_circulation/员工上报数据异常明细.txt'):
+        f.write(f"【异常数量】：\n")
+        f.write("公司名称\t\t异常核验次数\t\t涉及气瓶编号列表【钢瓶号】\n")
+        for _, row in company_abnormal_count.iterrows():
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
-    if company_exception.empty:
+def plot_fake_data(fake_data, df_cylinder, df_employee, company_mapping,
+                   pic_path_company="./gas_circulation/13、同时上传出站、开始配送、配送入户扫码核验记录（企业）.png",
+                   txt_path_company='./gas_circulation/13、同时上传出站、开始配送、配送入户扫码核验记录（企业）.txt',
+                   pic_path_employee="./gas_circulation/13、同时上传出站、开始配送、配送入户扫码核验记录（送气工）.png"):
+
+    if fake_data.empty:
         return
 
     # 将企业信息合并到异常记录中
-    abnormal_with_company = fake_data_cylinder.merge(df_cylinder, left_on='gas_id', right_on='id', how='left')
+    abnormal_with_company = fake_data.merge(df_cylinder, left_on='gas_id', right_on='id', how='left')
 
     # Step 3：统计每个 company_code/company 的异常次数
     company_abnormal_count = (
-        abnormal_with_company
-        .groupby(['companyCode'])
-        .size()
-        .reset_index(name='abnormal_count')
+        abnormal_with_company.groupby(['companyCode'])
+        .agg(abnormal_count=("gas_id", "count"), cylinder_list=("gas_id", lambda x: list(x)))
         .sort_values('abnormal_count', ascending=False)
     )
 
@@ -1058,10 +1174,8 @@ def plot_fake_data(company_exception, employee_exception, df_cylinder,  fake_dat
     company_abnormal_count = company_abnormal_count[::-1].merge(company_mapping, on='companyCode', how='left')
 
     # 类型转换与数据清洗
-    company_exception['abnormal_count'] = pd.to_numeric(company_exception['abnormal_count'], errors='coerce').fillna(
+    company_abnormal_count['abnormal_count'] = pd.to_numeric(company_abnormal_count['abnormal_count'], errors='coerce').fillna(
         0).astype(int)
-    company_df = company_exception[company_exception['abnormal_count'] > 0].sort_values('abnormal_count',
-                                                                                        ascending=True)
 
     # Step 4：绘图（横向柱状图）
     fig_height = max(6, len(company_abnormal_count) * 0.35)
@@ -1077,51 +1191,102 @@ def plot_fake_data(company_exception, employee_exception, df_cylinder,  fake_dat
                 va='center', fontsize=12, fontproperties=zh_font)
 
     # 图表设置
-    ax.set_title("企业上报数据异常次数", fontproperties=zh_font, fontsize=12)
-    ax.set_xlabel("异常次数", fontproperties=zh_font)
-    ax.set_ylabel("企业名称", fontproperties=zh_font)
+    # ax.set_title("同时上传出站、开始配送、配送入户扫码核验记录（企业）", fontproperties=zh_font, fontsize=12)
+    # ax.set_xlabel(f"异常核验次数（{sum(company_abnormal_count['abnormal_count'])}）", fontproperties=zh_font)
+    ax.set_ylabel("企业", fontproperties=zh_font)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=12)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/企业上报数据异常次数.png", dpi=300)
+    plt.savefig(pic_path_company, dpi=300)
     plt.close()
 
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_abnormal_count['cylinder_list'] = company_abnormal_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    df_temp = company_abnormal_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_abnormal_count = company_abnormal_count.merge(df_temp, on='companyCode', how='left', suffixes=('', '_drop'))
+    company_abnormal_count = company_abnormal_count.drop(
+        columns=[col for col in company_abnormal_count.columns if col.endswith('_drop')])
+
     # Step 5：输出 TXT 气瓶编号明细
-    txt_lines = ["【各公司超期未配送气瓶数据明细】", "公司名称 超期数量 气瓶编号列表"]
-    grouped = abnormal_with_company.groupby(['companyCode'])
-
-
-    for company_code, group in grouped:
-        company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0], '未知公司')
-        gas_ids = group['gas_id'].dropna().astype(str).tolist()
-        line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-        txt_lines.append(line)
-
     with open(txt_path_company, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
+        f.write(f"【同时上传出站、开始配送、配送入户扫码核验记录】统计：{sum(company_abnormal_count['abnormal_count'])}】\n\n")
 
+        f.write("公司名称\t\t异常核验次数\t\t涉及气瓶编号列表【钢瓶号】\n")
+        for _, row in company_abnormal_count.iterrows():
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
+
+
+    employee_exception = []
+    for _, row in fake_data.iterrows():
+        try:
+            status_list = row['status_path']
+            time_list = pd.to_datetime(row['time_path'])
+            emp_list = row['employee_Id']
+
+            idx7 = status_list.index('7')
+            step7_time = time_list[idx7]
+            emp = emp_list[idx7]
+
+            employee_exception.append({
+                'gas_id': row['gas_id'],
+                'employee_id': emp,
+                'abnormal_scan_time': step7_time,
+            })
+        except Exception:
+            continue
+    employee_exception = pd.DataFrame(employee_exception)
 
     if employee_exception.empty:
         return
+
+    # 将企业信息合并到异常记录中
+    # abnormal_with_employee = employee_exception.merge(df_employee, left_on='employee_id', right_on='id', how='left')
+
+    # Step 3：统计每个 company_code/company 的异常次数
+    employee_exception = (
+        employee_exception
+        .groupby(['employee_id'])
+        .size()
+        .reset_index(name='abnormal_count')
+        .sort_values('abnormal_count', ascending=False)
+    )
+
     # 类型转换与数据清洗
     employee_exception['abnormal_count'] = pd.to_numeric(
         employee_exception['abnormal_count'], errors='coerce'
     ).fillna(0).astype(int)
 
-    df_employee = employee_exception.sort_values(by="abnormal_count", ascending=False).head(20).sort_values('abnormal_count',
+    employee_exception = employee_exception.sort_values(by="abnormal_count", ascending=False).head(20).sort_values('abnormal_count',
                                                                                         ascending=True)
+    # 将企业信息合并到异常记录中
+    abnormal_with_employee = employee_exception.merge(df_employee, left_on='employee_id', right_on='id', how='left')
 
-    df_employee['label'] = df_employee['name'].fillna('未知员工') + '（' + employee_exception['company'].fillna('未知单位') + '）'
+    abnormal_with_employee['label'] = abnormal_with_employee['name'].fillna('未知员工') + '（' + abnormal_with_employee['company'].fillna('未知单位') + '）'
 
     # 动态调整高度
-    fig_height = max(6, len(df_employee) * 0.35)
+    fig_height = max(6, len(abnormal_with_employee) * 0.35)
     plt.figure(figsize=(10, fig_height))
     ax = plt.gca()
 
-    bars = ax.barh(df_employee['label'], df_employee['abnormal_count'], color='blue')
+    bars = ax.barh(abnormal_with_employee['label'], abnormal_with_employee['abnormal_count'], color='blue')
 
     # 数值标注
     for bar in bars:
@@ -1130,8 +1295,8 @@ def plot_fake_data(company_exception, employee_exception, df_cylinder,  fake_dat
                 va='center', fontsize=12, fontproperties=zh_font)
 
     # 图表设置
-    ax.set_title(f"员工上报数据异常次数 Top20", fontproperties=zh_font, fontsize=14)
-    ax.set_xlabel("异常次数", fontproperties=zh_font)
+    # ax.set_title(f"同时上传出站、开始配送、配送入户扫码核验记录（前20名员工）", fontproperties=zh_font, fontsize=14)
+    # ax.set_xlabel("异常核验次数", fontproperties=zh_font)
     ax.set_ylabel("员工（所属企业）", fontproperties=zh_font)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=11)
     ax.spines['top'].set_visible(False)
@@ -1139,36 +1304,25 @@ def plot_fake_data(company_exception, employee_exception, df_cylinder,  fake_dat
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/员工上报数据异常次数.png", dpi=300)
+    plt.savefig(pic_path_employee, dpi=300)
     plt.close()
 
-    # Step 5：输出 TXT 气瓶编号明细
-    txt_lines = ["【各公司超期未配送气瓶数据明细】", "姓名（所属企业） 超期数量 气瓶编号列表"]
-    grouped = abnormal_with_company.groupby(['companyCode'])
+def plot_no_delivered_specified_time(df, df_cylinder, df_employee, company_mapping,
+                                     pic_path_company="./gas_circulation/14、充装后一周仍未配送.png",
+                                     pic_path_employee = "./gas_circulation/14、充装后一周仍未配送_employee.png",
+                                     txt_path_company='./gas_circulation/14、充装后一周仍未配送_company.txt'):
 
-
-    for company_code, group in grouped:
-        company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0], '未知公司')
-        gas_ids = group['gas_id'].dropna().astype(str).tolist()
-        line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-        txt_lines.append(line)
-
-    with open(txt_path_company, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
-
-def plot_no_delivered_specified_time(df, df_cylinder, company_mapping, txt_path='./gas_circulation/超时未配送的气瓶详细记录.txt'):
     if df.empty:
         return pd.DataFrame()
 
+    # ========================= 公司维度统计 =========================
     # Step 2：将企业信息合并到异常记录中
     abnormal_with_company = df.merge(df_cylinder, left_on='gas_id', right_on='id', how='left')
 
     # Step 3：统计每个 company_code/company 的异常次数
     company_abnormal_count = (
-        abnormal_with_company
-        .groupby(['companyCode'])
-        .size()
-        .reset_index(name='abnormal_count')
+        abnormal_with_company.groupby(['companyCode'])
+        .agg(abnormal_count=("gas_id", "count"), cylinder_list=("gas_id", lambda x: list(x)))
         .sort_values('abnormal_count', ascending=False)
     )
 
@@ -1189,33 +1343,209 @@ def plot_no_delivered_specified_time(df, df_cylinder, company_mapping, txt_path=
                 va='center', fontsize=12, fontproperties=zh_font)
 
     # 图表设置
-    ax.set_title(f"各公司充装后超期未配送气瓶统计", fontproperties=zh_font, fontsize=14)
-    ax.set_xlabel("超期未配送气瓶数量", fontproperties=zh_font)
-    ax.set_ylabel("企业名称", fontproperties=zh_font)
+    # ax.set_title(f"充装后一周仍未配送统计", fontproperties=zh_font, fontsize=14)
+    # ax.set_xlabel(f"异常核验数量（{sum(company_abnormal_count['abnormal_count'])}）", fontproperties=zh_font)
+    ax.set_ylabel("企业", fontproperties=zh_font)
     ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=11)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
-    plt.savefig("./gas_circulation/超期未配送气瓶_企业柱状图.png", dpi=300)
+    plt.savefig(pic_path_company, dpi=300)
     plt.close()
 
+    # 如果 'cylinder_list' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    company_abnormal_count['cylinder_list'] = company_abnormal_count['cylinder_list'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    df_temp = company_abnormal_count.copy()
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 cylinder_list 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_temp['steelSealId_list'] = df_temp['cylinder_list'].apply(map_ids_to_steelSealId)
+
+    company_abnormal_count = company_abnormal_count.merge(df_temp, on='companyCode', how='left', suffixes=('', '_drop'))
+    company_abnormal_count = company_abnormal_count.drop(
+        columns=[col for col in company_abnormal_count.columns if col.endswith('_drop')])
+
     # Step 5：输出 TXT 气瓶编号明细
-    txt_lines = ["【各公司超期未配送气瓶数据明细】", "公司名称 超期数量 气瓶编号列表"]
-    grouped = abnormal_with_company.groupby(['companyCode'])
+    with open(txt_path_company, "w", encoding="utf-8") as f:
+        f.write(f"【各公司超期未配送气瓶统计信息：{sum(company_abnormal_count['abnormal_count'])}】\n\n")
 
+        f.write("公司名称\t\t超期数量\t\t涉及气瓶编号列表【钢瓶号】\n\n")
+        for _, row in company_abnormal_count.iterrows():
+            steelSealIds = ','.join(map(str, set(row["steelSealId_list"])))
+            gasids = ','.join(map(str, set(row['cylinder_list'])))
+            f.write(f"{row['company']}\t{int(row['abnormal_count'])}\t{gasids}[{steelSealIds}]\n")
 
-    for company_code, group in grouped:
-        company_name = dict(zip(company_mapping['companyCode'], company_mapping['company'])).get(company_code[0], '未知公司')
-        gas_ids = group['gas_id'].dropna().astype(str).tolist()
-        line = f"{company_name} {len(gas_ids)} " + ", ".join(gas_ids)
-        txt_lines.append(line)
+    # ========================= 员工维度统计 =========================
+    # 合并员工信息
+    abnormal_with_employee = df.merge(df_employee, left_on='employee_Id', right_on='id', how='left')
+
+    employee_abnormal_count = (
+        abnormal_with_employee
+        .groupby(['employee_Id', 'name', 'company'])
+        .size()
+        .reset_index(name='abnormal_count')
+        .sort_values('abnormal_count', ascending=False)
+    ).head(20).iloc[::-1]
+
+    # 绘图（员工维度）
+    fig_height = max(6, len(employee_abnormal_count) * 0.35)
+    plt.figure(figsize=(10, fig_height))
+    ax = plt.gca()
+    labels = employee_abnormal_count['name'].fillna('未知员工') + '（' + employee_abnormal_count['company'].fillna('未知单位') + '）'
+    bars = ax.barh(labels, employee_abnormal_count['abnormal_count'], color='blue')
+    for bar in bars:
+        width = bar.get_width()
+        ax.text(width + 0.3, bar.get_y() + bar.get_height() / 2, str(int(width)),
+                va='center', fontsize=12, fontproperties=zh_font)
+    ax.set_ylabel("员工", fontproperties=zh_font)
+    ax.set_yticklabels(ax.get_yticklabels(), fontproperties=zh_font, fontsize=11)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    plt.tight_layout()
+    plt.savefig(pic_path_employee, dpi=300)
+    plt.close()
+
+def plot_user_recycled_long_time(
+    over_resident_df,
+    over_nonresident_df,
+    df_cylinder,
+    company_mapping,
+    save_path="./gas_circulation/15、居民非居民回收超时统计.png",
+    txt_path="./gas_circulation/15、居民非居民回收超时_企业明细.txt",
+):
+    """
+    将居民与非居民回收超时绘制在同一张图，并输出每个企业的异常气瓶编号明细（高性能版）
+    依赖：
+      - over_resident_df/over_nonresident_df：包含至少 ['gas_id'] 的逐瓶明细（超时记录）
+      - df_cylinder：包含 ['id','companyCode']
+      - company_mapping：包含 ['companyCode','company']
+    """
+
+    # ========== 0) 边界处理 ==========
+    if (over_resident_df is None or over_resident_df.empty) and (over_nonresident_df is None or over_nonresident_df.empty):
+        # 没有任何超时记录，直接生成空文件并返回
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("【总览】居民超时：0；非居民超时：0；合计：0\n\n（无明细）")
+        return pd.DataFrame(columns=["company","count_resident","ids_resident","count_nonresident","ids_nonresident","total","ids_total"])
+
+    # ========== 1) 预先构建映射（O(n) 字典查找，替代 DataFrame merge/groupby）==========
+    # gas_id -> companyCode
+    # 只取必要列，避免复制整表
+    gc = df_cylinder[["id", "companyCode"]].dropna()
+    gasid_to_cc = dict(zip(gc["id"], gc["companyCode"]))
+
+    # companyCode -> 中文名
+    cm = company_mapping[["companyCode", "company"]].drop_duplicates()
+    cc_to_name = dict(zip(cm["companyCode"], cm["company"]))
+
+    # 小工具：给定 gas_id 返回企业中文名
+    def company_of(gid):
+        cc = gasid_to_cc.get(gid)
+        return cc_to_name.get(cc, "未知企业")
+
+    # ========== 2) 线性扫描聚合（居民/非居民分别一趟）==========
+    # 用 set 存编号，避免后面再去重；最后再排序输出
+    res_ids = defaultdict(set)   # company -> set(gas_id_str)
+    non_ids = defaultdict(set)
+
+    if over_resident_df is not None and not over_resident_df.empty:
+        for gid in over_resident_df["gas_id"].values:
+            res_ids[company_of(gid)].add(str(gid))
+
+    if over_nonresident_df is not None and not over_nonresident_df.empty:
+        for gid in over_nonresident_df["gas_id"].values:
+            non_ids[company_of(gid)].add(str(gid))
+
+    # 所有企业集合
+    companies = sorted(set(res_ids.keys()) | set(non_ids.keys()))
+
+    # ========== 3) 组装结果 DataFrame（一次性）==========
+    # 使用列表收集，最后一次构造 DataFrame，避免逐行 append
+    rows = []
+    for comp in companies:
+        ids_r = sorted(res_ids.get(comp, set()))
+        ids_n = sorted(non_ids.get(comp, set()))
+        cnt_r = len(ids_r)
+        cnt_n = len(ids_n)
+        ids_all = sorted(set(ids_r) | set(ids_n))
+        rows.append((comp, cnt_r, ids_r, cnt_n, ids_n, cnt_r + cnt_n, ids_all))
+
+    combined = pd.DataFrame(rows, columns=[
+        "company", "count_resident", "ids_resident",
+        "count_nonresident", "ids_nonresident", "total", "ids_total"
+    ])
+
+    # 若结果为空（理论上不会），提前收尾
+    if combined.empty:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("【总览】居民超时：0；非居民超时：0；合计：0\n\n（无明细）")
+        return combined
+
+    # ========== 4) 绘图（分组横向柱状）==========
+    combined_plot = combined.sort_values("total", ascending=True)
+    fig_h = max(6, len(combined_plot) * 0.35)
+    plt.figure(figsize=(12, fig_h))
+    ax = plt.gca()
+
+    y_pos = np.arange(len(combined_plot))
+    bar_h = 0.4
+
+    bars_res = ax.barh(y_pos - bar_h/2, combined_plot["count_resident"].values,
+                       height=bar_h, label="居民（阈值60天）", color='orange')
+    bars_non = ax.barh(y_pos + bar_h/2, combined_plot["count_nonresident"].values,
+                       height=bar_h, label="非居民（阈值15天）", color='blue')
+
+    max_v = max(combined_plot["count_resident"].max(), combined_plot["count_nonresident"].max(), 1)
+    ax.set_xlim(0, max_v * 1.2)
+
+    # 数值标注
+    for bars in (bars_res, bars_non):
+        for b in bars:
+            w = b.get_width()
+            ax.text(w + max_v * 0.02, b.get_y() + b.get_height()/2,
+                    f"{int(w)}", va="center", fontproperties=zh_font, fontsize=10)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(combined_plot["company"].values, fontproperties=zh_font, fontsize=10)
+    total_res = int(combined["count_resident"].sum())
+    total_non = int(combined["count_nonresident"].sum())
+    total_all = int(combined["total"].sum())
+    ax.set_xlabel(f"超时操作数量（居民：{total_res}；非居民：{total_non}；合计：{total_all}）", fontproperties=zh_font)
+    ax.set_ylabel("企业", fontproperties=zh_font)
+    ax.set_title("居民与非居民用户回收超时统计（按企业）", fontproperties=zh_font, fontsize=12)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xticklabels(ax.get_xticklabels(), fontproperties=zh_font, fontsize=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(prop=zh_font, fontsize=10)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
+
+    # ========== 5) 文本导出（一次写入）==========
+    out_lines = []
+    out_lines.append(f"【总览】居民超时：{total_res}；非居民超时：{total_non}；合计：{total_all}\n")
+    out_lines.append("【按企业明细（居民 / 非居民 / 合计）】")
+    # 按合计从大到小
+    for comp, cnt_r, ids_r, cnt_n, ids_n, cnt_all, ids_all in combined.sort_values("total", ascending=False).itertuples(index=False):
+        out_lines.append(f"{comp}")
+        out_lines.append(f"  居民：{cnt_r} 个 | 编号：{(', '.join(ids_r)) if ids_r else '-'}")
+        out_lines.append(f"  非居民：{cnt_n} 个 | 编号：{(', '.join(ids_n)) if ids_n else '-'}")
+        out_lines.append(f"  合计：{cnt_all} 个 | 编号：{(', '.join(ids_all)) if ids_all else '-'}\n")
 
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
+        f.write("\n".join(out_lines))
 
-    return company_abnormal_count
-
-def plot_user_recycled_long_time():
-    pass
+    return combined

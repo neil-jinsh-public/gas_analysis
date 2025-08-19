@@ -5,11 +5,12 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.pyplot import legend
 from matplotlib.ticker import MaxNLocator
 import math
+import ast
 
 # 设置中文字体路径
 zh_font = FontProperties(fname=r"C:\Users\neilj\AppData\Local\Microsoft\Windows\Fonts\方正小标宋_GBK.TTF", size=12)
 
-def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, txt_path="./gas_cylinder/各企业气瓶状态数量统计.txt"):
+def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, pic_path="./gas_cylinder/2、各企业在库气瓶类型统计.png", txt_path="./gas_cylinder/2、各企业气瓶状态数量统计.txt"):
     """
     绘制每个企业各类气瓶数量的堆叠横向柱状图，并标注总数与各类占比。
     图表底部展示总气瓶数量及各类气瓶数量。
@@ -53,8 +54,8 @@ def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, txt_pat
     fig, ax = plt.subplots(figsize=(14, max(6, len(pivot_df) * 0.5)))
     pivot_df.plot(kind='barh', stacked=True, ax=ax)
 
-    plt.title(f"各企业气瓶状态数量统计", fontproperties=zh_font)
-    plt.xlabel("数量", fontproperties=zh_font)
+    # plt.title(f"各企业气瓶状态数量统计", fontproperties=zh_font)
+    # plt.xlabel("数量", fontproperties=zh_font)
     plt.ylabel("企业名称", fontproperties=zh_font)
     plt.yticks(fontproperties=zh_font, fontsize=14)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -72,7 +73,7 @@ def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, txt_pat
                 ax.text(
                     width_accum + width / 2,
                     bar.get_y() + bar.get_height() / 2,
-                    f'{int(value)} ({value / total:.2%})',
+                    f'{int(value)}',
                     ha='center',
                     va='center',
                     color='red',
@@ -109,11 +110,11 @@ def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, txt_pat
     total_all = sum(total_counts.values())
     status_texts = [f'{status_mapping.get(k)}：{total_counts.get(k, 0)}' for k in sorted(status_mapping)]
     summary_text = f'各地市在库气瓶总数：{total_all}个; ' + '个, '.join(status_texts)
-    plt.xlabel(summary_text, fontproperties=zh_font, fontsize=16, color='red')
+    plt.xlabel('', fontproperties=zh_font, fontsize=16, color='red')
 
     # 保存图像
     plt.tight_layout()
-    plt.savefig(f"./gas_cylinder/各企业气瓶状态数量统计.png", dpi=300)
+    plt.savefig(pic_path, dpi=300)
     plt.close()
 
     # 导出 TXT 文件
@@ -127,7 +128,7 @@ def plot_cylinder_type_by_company(df_cylinder, df_type, company_mapping, txt_pat
             values = "\t".join([str(int(row.get(s, 0))) for s in sorted(pivot_df.columns)])
             f.write(f"{company}\t{values}\n")
 
-def plot_overdue_check(df_check, df_total, company_mapping, txt_path="./gas_cylinder/各企业已超核验时间但仍被标记为在用气瓶的数量明细.txt"):
+def plot_overdue_check(df_check, df_total, company_mapping, df_cylinder, pic_path="./gas_cylinder/3、各企业在用气瓶超期未检数量统计.png", txt_path="./gas_cylinder/3、各企业在用气瓶超期未检数量统计.txt"):
     """
     绘制各站点超过下次检验日期的气瓶数量柱状图（只标注数量），并在x轴标题显示总数与前三名公司。
 
@@ -146,7 +147,7 @@ def plot_overdue_check(df_check, df_total, company_mapping, txt_path="./gas_cyli
     # 剔除缺失值
     df_plot = df_plot.dropna(subset=['company'])
     # 按总数升序排列，保持横向柱状图一致性
-    df_plot = df_plot.sort_values(by='total_count', ascending=True).reset_index(drop=True)
+    df_plot = df_plot.sort_values(by='overdue_check_count', ascending=True).reset_index(drop=True)
 
     # 创建图像和坐标轴
     fig, ax = plt.subplots(figsize=(14, max(6, len(df_plot) * 0.4)))
@@ -170,8 +171,8 @@ def plot_overdue_check(df_check, df_total, company_mapping, txt_path="./gas_cyli
         )
 
     # 图形样式设置
-    ax.set_xlabel("气瓶数量", fontproperties=zh_font)
-    ax.set_title("各企业在用气瓶总数与超期检验数量（含占比）", fontproperties=zh_font)
+    # ax.set_xlabel("数量", fontproperties=zh_font)
+    # ax.set_title("各企业在用气瓶超期未检数量统计", fontproperties=zh_font)
     plt.xticks(fontproperties=zh_font)
     plt.yticks(fontproperties=zh_font, fontsize=9)
     ax.legend(prop=zh_font)
@@ -180,28 +181,46 @@ def plot_overdue_check(df_check, df_total, company_mapping, txt_path="./gas_cyli
     ax.spines['right'].set_visible(False)
 
     # 总数与前三公司文字
-    total_overdue = df_plot['overdue_check_count'].sum()
-    top3 = df_plot.sort_values(by='overdue_check_count', ascending=False).head(3)
-    top3_text = "，".join([
-        f"{row['company']}（{int(row['overdue_check_count'])}个）"
-        for _, row in top3.iterrows()
-    ])
-    bottom_text = f"各地市已超下次检验日期的在库气瓶总数：{int(total_overdue)}；前三名：{top3_text}"
+    # top3 = df_plot.sort_values(by='overdue_check_count', ascending=False).head(3)
+    # top3_text = "，".join([
+    #     f"{row['company']}（{int(row['overdue_check_count'])}个）"
+    #     for _, row in top3.iterrows()
+    # ])
+    bottom_text = f"各地市已超下次检验日期的在库气瓶总数：{int(df_plot['overdue_check_count'].sum())}"
 
     # 添加底部说明文字
-    fig.text(
-        0.5, -0, bottom_text,
-        ha='center',
-        va='top',
-        fontsize=12,
-        fontproperties=zh_font,
-        color='red'
-    )
+    # fig.text(
+    #     0.5, -0, bottom_text,
+    #     ha='center',
+    #     va='top',
+    #     fontsize=12,
+    #     fontproperties=zh_font,
+    #     color='red'
+    # )
 
     plt.subplots_adjust(bottom=0.3)
     plt.tight_layout()
-    plt.savefig("./gas_cylinder/超期检验气瓶统计.png", dpi=300, bbox_inches='tight')
+    plt.savefig(pic_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+    # 如果 'overdue_check_gasids' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    df_check['overdue_check_gasids'] = df_check['overdue_check_gasids'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 overdue_check_gasids 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_check['overdue_check_steelSealId'] = df_check['overdue_check_gasids'].apply(map_ids_to_steelSealId)
+
+    df_plot = df_plot.merge(df_check, on='companyCode', how='left', suffixes=('', '_drop'))
+    df_plot = df_plot.drop(columns=[col for col in df_plot.columns if col.endswith('_drop')])
+    df_plot = df_plot[df_plot['overdue_check_count'] > 0].sort_values('overdue_check_count', ascending=True)
 
     # 导出 TXT 文件
     with open(txt_path, "w", encoding="utf-8") as f:
@@ -209,18 +228,14 @@ def plot_overdue_check(df_check, df_total, company_mapping, txt_path="./gas_cyli
         f.write(f"{bottom_text} \n")
         f.write(f"总超期气瓶数：{total}\n\n")
 
-        f.write("【超期气瓶排名前三】\n")
-        for i, (_, row) in enumerate(top3.iterrows(), 1):
-            f.write(f"{i}. {row['company']}：{int(row['overdue_check_count'])}\n")
-        f.write("\n")
-
         f.write("【各公司超期气瓶数量明细】\n")
-        f.write("公司名称\t超期数量\t气瓶编号列表\n")
+        f.write("公司名称\t超期数量\t气瓶编号[钢瓶号]\n")
         for _, row in df_plot.iterrows():
-            ids = ','.join(row['overdue_check_gasids'])
-            f.write(f"{row['company']}\t{int(row['overdue_check_count'])}\t{ids}\n")
+            steelSealIds = ','.join(row['overdue_check_steelSealId'])
+            gasids = ','.join(row['overdue_check_gasids'])
+            f.write(f"{row['company']}\t{int(row['overdue_check_count'])}\t{gasids}[{steelSealIds}]\n")
 
-def plot_overdue_scrap(df_scrap, df_total, company_mapping, txt_path="./gas_cylinder/各企业已过报废时间但仍被标记为在用气瓶的数量明细.txt"):
+def plot_overdue_scrap(df_scrap, df_total, company_mapping, df_cylinder, pic_path="./gas_cylinder/4、各企业在用气瓶超报废时间数量统计.png", txt_path="./gas_cylinder/4、各企业在用气瓶超报废时间数量统计.txt"):
     """
     绘制各站点超过报废年月的气瓶数量柱状图（只标注数量）。
     参数：
@@ -239,7 +254,7 @@ def plot_overdue_scrap(df_scrap, df_total, company_mapping, txt_path="./gas_cyli
     # 剔除缺失值
     df_plot = df_plot.dropna(subset=['company'])
     # 按总数升序排列，保持横向柱状图一致性
-    df_plot = df_plot.sort_values(by='total_count', ascending=True).reset_index(drop=True)
+    df_plot = df_plot.sort_values(by='overdue_scrap_count', ascending=True).reset_index(drop=True)
 
     # 创建图像和坐标轴
     fig, ax = plt.subplots(figsize=(14, max(6, len(df_plot) * 0.4)))
@@ -263,8 +278,8 @@ def plot_overdue_scrap(df_scrap, df_total, company_mapping, txt_path="./gas_cyli
         )
 
     # 图形样式设置
-    ax.set_xlabel("气瓶数量", fontproperties=zh_font)
-    ax.set_title("各企业在用气瓶总数与超期报废数量（含占比）", fontproperties=zh_font)
+    # ax.set_xlabel("数量", fontproperties=zh_font)
+    # ax.set_title("各企业在用气瓶超报废时间数量统计", fontproperties=zh_font)
     plt.xticks(fontproperties=zh_font)
     plt.yticks(fontproperties=zh_font, fontsize=9)
     ax.legend(prop=zh_font)
@@ -273,28 +288,45 @@ def plot_overdue_scrap(df_scrap, df_total, company_mapping, txt_path="./gas_cyli
     ax.spines['right'].set_visible(False)
 
     # 总数与前三公司文字
-    total_overdue = df_plot['overdue_scrap_count'].sum()
-    top3 = df_plot.sort_values(by='overdue_scrap_count', ascending=False).head(3)
-    top3_text = "，".join([
-        f"{row['company']}（{int(row['overdue_scrap_count'])}个）"
-        for _, row in top3.iterrows()
-    ])
-    bottom_text = f"各地市已超报废日期的在库气瓶总数：{int(total_overdue)}；前三名：{top3_text}"
+    # top3 = df_plot.sort_values(by='overdue_scrap_count', ascending=False).head(3)
+    # top3_text = "，".join([
+    #     f"{row['company']}（{int(row['overdue_scrap_count'])}个）"
+    #     for _, row in top3.iterrows()
+    # ])
+    bottom_text = f"已超报废日期的在库气瓶总数：{int(df_plot['overdue_scrap_count'].sum())}"
 
     # 添加底部说明文字
-    fig.text(
-        0.5, -0, bottom_text,
-        ha='center',
-        va='top',
-        fontsize=12,
-        fontproperties=zh_font,
-        color='red'
-    )
+    # fig.text(
+    #     0.5, -0, '',
+    #     ha='center',
+    #     va='top',
+    #     fontsize=12,
+    #     fontproperties=zh_font,
+    #     color='red'
+    # )
 
     plt.subplots_adjust(bottom=0.3)
     plt.tight_layout()
-    plt.savefig("./gas_cylinder/超期报废气瓶统计.png", dpi=300, bbox_inches='tight')
+    plt.savefig(pic_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+    # 如果 'overdue_check_gasids' 列存的是字符串（像 "['a','b']"），先转为真正的 list
+    df_scrap['overdue_scrap_gasids'] = df_scrap['overdue_scrap_gasids'].apply(
+        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
+    )
+
+    # 构建 id → steelSealId 的映射
+    id2steelSealId = df_cylinder.set_index('id')['steelSealId'].to_dict()
+
+    # 定义函数：把 overdue_check_gasids 映射成对应的 steelSealId 列表
+    def map_ids_to_steelSealId(ids):
+        return [id2steelSealId.get(gid, None) for gid in ids] if ids else []
+
+    # 新增一列保存对应的 steelSealId
+    df_scrap['overdue_scrap_steelSealId'] = df_scrap['overdue_scrap_gasids'].apply(map_ids_to_steelSealId)
+
+    df_plot = df_plot.merge(df_scrap.drop(columns=['overdue_scrap_count', 'overdue_scrap_gasids']), on='companyCode', how='left')
+    df_plot = df_plot[df_plot['overdue_scrap_count'] > 0].sort_values('overdue_scrap_count', ascending=True)
 
     # 输出 TXT 文件（详细）
     with open(txt_path, "w", encoding="utf-8") as f:
@@ -303,29 +335,20 @@ def plot_overdue_scrap(df_scrap, df_total, company_mapping, txt_path="./gas_cyli
         f.write("【超期报废气瓶总数】\n")
         f.write(f"总超期报废气瓶数：{total}\n\n")
 
-        f.write("【超期报废气瓶排名前三】\n")
-        top3 = df_plot.head(3)
-        for i, (_, row) in enumerate(top3.iterrows(), 1):
-            f.write(f"{i}. {row['company']}：{int(row['overdue_scrap_count'])}\n")
-        f.write("\n")
-
         f.write("【各公司超期报废气瓶数量明细】\n")
         f.write("公司名称\t超期数量\t气瓶编号列表\n")
         for _, row in df_plot.iterrows():
-            ids = ','.join(row['overdue_scrap_gasids'])
-            f.write(f"{row['company']}\t{int(row['overdue_scrap_count'])}\t{ids}\n")
+            steelSealIds = ','.join(row['overdue_scrap_steelSealId'])
+            gasids = ','.join(row['overdue_scrap_gasids'])
+            f.write(f"{row['company']}\t{int(row['overdue_scrap_count'])}\t{gasids}[{steelSealIds}]\n")
 
-def plot_all_pie_charts(df, df_type, current_time):
+def plot_all_pie_charts(df, df_type, current_time, pic_path="./gas_cylinder/1、在库气瓶统计.png"):
     """
     生成三个饼图合并为一张图，优化标注不重叠问题：
     1. 各类型气瓶占比
     2. 在用气瓶中超过下次检验日期占比
     3. 在用气瓶中超过报废日期占比
     """
-
-    if current_time is None:
-        current_time = pd.Timestamp.now()
-
     status_mapping = {0: "在用", 1: "报废", 2: "注销", 3: "停用", 4: "其它"}
 
     fig, axs = plt.subplots(1, 3, figsize=(18, 6))
@@ -414,7 +437,7 @@ def plot_all_pie_charts(df, df_type, current_time):
     )
 
     # 总标题与布局
-    fig.suptitle("各地市在库气瓶状态统计", fontproperties=zh_font, fontsize=16, y=0.95)
+    fig.suptitle("在库气瓶状态统计", fontproperties=zh_font, fontsize=16, y=0.95)
     plt.subplots_adjust(top=0.88, bottom=0.1, wspace=0.3)
-    plt.savefig("./gas_cylinder/各地市在库气瓶状态统计.png", dpi=300, bbox_inches='tight')
+    plt.savefig(pic_path, dpi=300, bbox_inches='tight')
     plt.close()
